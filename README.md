@@ -55,7 +55,7 @@ Then start a new Hermes session (plugins load at startup).
 Verify the tools loaded:
 
 ```bash
-hermes tools list | grep mm_
+hermes tools list | grep mattermost
 ```
 
 You should see `mm_send`, `mm_read`, `mm_list_channels`, `mm_open_dm` listed under the `mattermost` toolset.
