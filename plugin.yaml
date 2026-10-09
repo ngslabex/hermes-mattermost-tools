@@ -1,23 +1,30 @@
 name: mattermost-tools
 label: Mattermost Tools
 kind: backend
-version: 0.1.0
+version: 0.2.0
+
 description: >
-  Agent-callable Mattermost tools for Hermes — send messages, read channel
-  history, list channels, open and read direct message conversations.
-  Requires the Mattermost gateway platform plugin to already be configured
-  (uses the same MATTERMOST_URL and MATTERMOST_TOKEN env vars).
+  Agent-callable Mattermost tools for Hermes. Supports sending messages,
+  reading channel and direct-message history, listing channels and users,
+  and opening direct-message conversations. The mm_read tool supports
+  standard posts, attachment-only webhook posts, Slack-compatible
+  attachments, and Mattermost blocks. Requires MATTERMOST_URL and
+  MATTERMOST_TOKEN to be available in the Hermes process environment.
+
 author: hermes-mattermost-tools contributors
+
 provides_tools:
   - mm_send
   - mm_read
   - mm_list_channels
-  - mm_open_dm
   - mm_list_users
+  - mm_open_dm
+
 requires_env:
   - name: MATTERMOST_URL
-    description: "Mattermost server URL (e.g. https://mm.example.com)"
+    description: "Mattermost server URL, for example https://mm.example.com"
     password: false
+
   - name: MATTERMOST_TOKEN
-    description: "Bot account token or personal-access token"
+    description: "Mattermost bot account token or personal access token"
     password: true
