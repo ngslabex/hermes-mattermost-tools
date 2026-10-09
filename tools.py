@@ -1,17 +1,19 @@
 """
 Tool handlers and JSON schemas for the Mattermost agent tools.
 
-Four tools:
-  mm_send          — post a message to a channel or DM
-  mm_read          — read recent messages from a channel
-  mm_list_channels — list channels in the team
-  mm_open_dm       — open a DM and optionally send a first message
+Five tools:
+  mm_send          - post a message to a channel or DM
+  mm_read          - read recent messages from a channel or DM
+  mm_list_channels - list channels in the team
+  mm_list_users    - list users in the team
+  mm_open_dm       - open a DM and optionally send a first message
 """
 
 from __future__ import annotations
 
+import datetime
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, List
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +26,7 @@ MM_SEND_SCHEMA: Dict[str, Any] = {
         "Send a message to a Mattermost channel or direct-message conversation. "
         "Accepts a channel name (e.g. 'agents-flood', '~town-square'), a channel ID, "
         "or a username prefixed with '@' for a DM (e.g. '@alice'). "
-        "Use this whenever you need to post proactively — notifications, status updates, "
+        "Use this whenever you need to post proactively: notifications, status updates, "
         "or kicking off a conversation in a specific channel."
     ),
     "parameters": {
@@ -34,7 +36,8 @@ MM_SEND_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "description": (
                     "Channel name, channel ID, or '@username' for a DM. "
-                    "Examples: 'agents-flood', 'town-square', '@bob', 'abc123def456ghi789jkl012mn'."
+                    "Examples: 'agents-flood', 'town-square', '@bob', "
+                    "'abc123def456ghi789jkl012mn'."
                 ),
             },
             "message": {
@@ -51,8 +54,10 @@ MM_READ_SCHEMA: Dict[str, Any] = {
     "description": (
         "Read recent messages from a Mattermost channel or DM. "
         "Returns posts in reverse-chronological order (newest first). "
-        "Use this to catch up on a channel before responding, or to check "
-        "whether a message you sent was received."
+        "Reads standard message text and attachment-only webhook posts, including "
+        "attachment title, pretext, text, fallback, fields, and Mattermost blocks. "
+        "Use this to catch up on a channel before responding or to check whether "
+        "a message was received."
     ),
     "parameters": {
         "type": "object",
@@ -63,7 +68,7 @@ MM_READ_SCHEMA: Dict[str, Any] = {
             },
             "limit": {
                 "type": "integer",
-                "description": "Number of messages to return (1–100, default 20).",
+                "description": "Number of messages to return (1-100, default 20).",
                 "default": 20,
             },
         },
@@ -75,8 +80,8 @@ MM_LIST_CHANNELS_SCHEMA: Dict[str, Any] = {
     "name": "mm_list_channels",
     "description": (
         "List Mattermost channels. "
-        "scope='joined' (default) returns all channels the bot is a member of — "
-        "both public and private. Use this to see what's available before posting. "
+        "scope='joined' (default) returns all channels the bot is a member of, "
+        "both public and private. Use this to see what is available before posting. "
         "scope='public' returns public channels only, useful for discovery. "
         "Returns channel names, IDs, and types."
     ),
@@ -87,7 +92,7 @@ MM_LIST_CHANNELS_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "enum": ["joined", "public"],
                 "description": (
-                    "'joined' (default): all channels the bot belongs to (public + private). "
+                    "'joined' (default): all channels the bot belongs to (public and private). "
                     "'public': public channels only, regardless of membership."
                 ),
                 "default": "joined",
@@ -98,19 +103,20 @@ MM_LIST_CHANNELS_SCHEMA: Dict[str, Any] = {
             },
             "limit": {
                 "type": "integer",
-                "description": "Maximum channels to return (1–200, default 50).",
+                "description": "Maximum channels to return (1-200, default 50).",
                 "default": 50,
             },
         },
         "required": [],
     },
 }
+
 MM_OPEN_DM_SCHEMA: Dict[str, Any] = {
     "name": "mm_open_dm",
     "description": (
         "Open a direct-message conversation with a Mattermost user. "
-        "Optionally sends an initial message. Returns the DM channel ID "
-        "which you can then pass to mm_send or mm_read."
+        "Optionally sends an initial message. Returns the DM channel ID, "
+        "which can then be passed to mm_send or mm_read."
     ),
     "parameters": {
         "type": "object",
@@ -133,7 +139,7 @@ MM_LIST_USERS_SCHEMA: Dict[str, Any] = {
     "description": (
         "List users in the Mattermost team. "
         "Returns usernames, display names, and user IDs. "
-        "Use this to find someone's username before opening a DM or @mentioning them. "
+        "Use this to find a username before opening a DM or mentioning a user. "
         "Supports optional search to filter by name or username."
     ),
     "parameters": {
@@ -145,7 +151,7 @@ MM_LIST_USERS_SCHEMA: Dict[str, Any] = {
             },
             "limit": {
                 "type": "integer",
-                "description": "Maximum users to return (1–200, default 50).",
+                "description": "Maximum users to return (1-200, default 50).",
                 "default": 50,
             },
         },
@@ -158,72 +164,249 @@ MM_LIST_USERS_SCHEMA: Dict[str, Any] = {
 # Availability check
 # ---------------------------------------------------------------------------
 
+
 def _check_available() -> bool:
     import os
-    return bool(os.environ.get("MATTERMOST_URL") and os.environ.get("MATTERMOST_TOKEN"))
+
+    return bool(
+        os.environ.get("MATTERMOST_URL")
+        and os.environ.get("MATTERMOST_TOKEN")
+    )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _resolve_target(target: str):
-    """Return (channel_id, is_dm) for any target string."""
+    """Return (channel_id, is_dm) for any supported target string."""
     from .client import open_direct_channel, resolve_channel, resolve_user
+
     if target.startswith("@"):
-        uid = resolve_user(target)
-        cid = open_direct_channel(uid)
-        return cid, True
-    cid = resolve_channel(target)
-    return cid, False
+        user_id = resolve_user(target)
+        channel_id = open_direct_channel(user_id)
+        return channel_id, True
+
+    channel_id = resolve_channel(target)
+    return channel_id, False
+
+
+def _append_text(parts: List[str], value: Any) -> None:
+    """Append a non-empty textual value to parts."""
+    if isinstance(value, str):
+        value = value.strip()
+        if value:
+            parts.append(value)
+
+
+def _deduplicate(parts: Iterable[str]) -> List[str]:
+    """Remove exact duplicates while preserving the original order."""
+    unique: List[str] = []
+    seen = set()
+
+    for part in parts:
+        normalized = part.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+
+    return unique
+
+
+def _parse_attachments(value: Any) -> List[Dict[str, Any]]:
+    """Normalize Mattermost attachment props into a list of dictionaries."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+
+    if not isinstance(value, list):
+        return []
+
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _extract_attachment_text(attachments: Any) -> List[str]:
+    """Extract readable text from Slack-compatible Mattermost attachments."""
+    parts: List[str] = []
+
+    for attachment in _parse_attachments(attachments):
+        for key in ("pretext", "title", "text", "fallback"):
+            _append_text(parts, attachment.get(key))
+
+        fields = attachment.get("fields") or []
+        if isinstance(fields, list):
+            for field in fields:
+                if not isinstance(field, dict):
+                    continue
+
+                field_title = str(field.get("title") or "").strip()
+                field_value = str(field.get("value") or "").strip()
+
+                if field_title and field_value:
+                    parts.append(f"{field_title}: {field_value}")
+                elif field_value:
+                    parts.append(field_value)
+
+        image_url = attachment.get("image_url")
+        if isinstance(image_url, str) and image_url.strip():
+            parts.append(f"Image: {image_url.strip()}")
+
+        title_link = attachment.get("title_link")
+        if isinstance(title_link, str) and title_link.strip():
+            parts.append(f"Link: {title_link.strip()}")
+
+    return parts
+
+
+def _extract_block_text(blocks: Any) -> List[str]:
+    """Extract readable text from Mattermost block data when present."""
+    if isinstance(blocks, str):
+        try:
+            blocks = json.loads(blocks)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+
+    if not isinstance(blocks, list):
+        return []
+
+    parts: List[str] = []
+
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+
+        text = block.get("text")
+        if isinstance(text, dict):
+            text = text.get("text")
+        _append_text(parts, text)
+
+        fields = block.get("fields") or []
+        if isinstance(fields, list):
+            for field in fields:
+                if isinstance(field, dict):
+                    _append_text(parts, field.get("text"))
+                else:
+                    _append_text(parts, field)
+
+    return parts
+
+
+def _format_timestamp(timestamp_ms: Any) -> str:
+    """Format a Mattermost millisecond timestamp as UTC."""
+    try:
+        return datetime.datetime.fromtimestamp(
+            int(timestamp_ms) / 1000,
+            tz=datetime.timezone.utc,
+        ).strftime("%Y-%m-%d %H:%M UTC")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "unknown-time"
 
 
 def _fmt_posts(posts_data: dict, limit: int) -> str:
-    """Format a Mattermost posts response into readable text."""
+    """Format Mattermost posts, including attachment-only webhook posts."""
     order = posts_data.get("order", [])
     posts = posts_data.get("posts", {})
-    out = []
-    for pid in order[:limit]:
-        p = posts.get(pid, {})
-        author = p.get("props", {}).get("override_username") or p.get("user_id", "?")
-        ts_ms = p.get("create_at", 0)
-        import datetime
-        ts = datetime.datetime.utcfromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d %H:%M UTC")
-        msg = p.get("message", "").strip()
-        out.append(f"[{ts}] {author}: {msg}")
-    return "\n".join(out) if out else "(no messages)"
+
+    if not isinstance(order, list) or not isinstance(posts, dict):
+        return "(no messages)"
+
+    output: List[str] = []
+
+    for post_id in order[:limit]:
+        post = posts.get(post_id, {})
+        if not isinstance(post, dict):
+            continue
+
+        props = post.get("props") or {}
+        if not isinstance(props, dict):
+            props = {}
+
+        author = (
+            props.get("override_username")
+            or post.get("user_id")
+            or "unknown"
+        )
+        timestamp = _format_timestamp(post.get("create_at", 0))
+
+        message_parts: List[str] = []
+        _append_text(message_parts, post.get("message"))
+
+        message_parts.extend(
+            _extract_attachment_text(props.get("attachments"))
+        )
+        message_parts.extend(
+            _extract_block_text(props.get("mm_blocks"))
+        )
+
+        message_parts = _deduplicate(message_parts)
+        formatted_message = "\n".join(message_parts) or "(empty post)"
+
+        output.append(
+            f"[{timestamp}] {author}: {formatted_message}"
+        )
+
+    return "\n\n".join(output) if output else "(no messages)"
 
 
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
 
+
 def handle_mm_send(args: Dict[str, Any], **_) -> str:
     target = (args.get("target") or "").strip()
     message = (args.get("message") or "").strip()
+
     if not target:
         return json.dumps({"error": "target is required"})
     if not message:
         return json.dumps({"error": "message is required"})
+
     try:
-        from .client import _request, open_direct_channel, resolve_user, resolve_channel
-        channel_id, is_dm = _resolve_target(target)
-        data = _request("POST", "posts", {"channel_id": channel_id, "message": message})
+        from .client import _request
+
+        channel_id, _is_dm = _resolve_target(target)
+        data = _request(
+            "POST",
+            "posts",
+            {"channel_id": channel_id, "message": message},
+        )
         post_id = data.get("id", "?")
-        return json.dumps({"ok": True, "post_id": post_id, "channel_id": channel_id})
+        return json.dumps(
+            {
+                "ok": True,
+                "post_id": post_id,
+                "channel_id": channel_id,
+            }
+        )
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
 
 def handle_mm_read(args: Dict[str, Any], **_) -> str:
     target = (args.get("target") or "").strip()
-    limit = max(1, min(100, int(args.get("limit") or 20)))
+
+    try:
+        limit = max(1, min(100, int(args.get("limit") or 20)))
+    except (TypeError, ValueError):
+        return json.dumps({"error": "limit must be an integer"})
+
     if not target:
         return json.dumps({"error": "target is required"})
+
     try:
         from .client import _request
-        channel_id, _ = _resolve_target(target)
-        data = _request("GET", f"channels/{channel_id}/posts", params={"per_page": limit})
+
+        channel_id, _is_dm = _resolve_target(target)
+        data = _request(
+            "GET",
+            f"channels/{channel_id}/posts",
+            params={"page": 0, "per_page": limit},
+        )
         return _fmt_posts(data, limit)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
@@ -232,17 +415,41 @@ def handle_mm_read(args: Dict[str, Any], **_) -> str:
 def handle_mm_list_channels(args: Dict[str, Any], **_) -> str:
     scope = (args.get("scope") or "joined").strip()
     search = (args.get("search") or "").strip()
-    limit = max(1, min(200, int(args.get("limit") or 50)))
+
+    if scope not in {"joined", "public"}:
+        return json.dumps({"error": "scope must be 'joined' or 'public'"})
+
     try:
-        from .client import get_team_id, list_team_channels, _request
+        limit = max(1, min(200, int(args.get("limit") or 50)))
+    except (TypeError, ValueError):
+        return json.dumps({"error": "limit must be an integer"})
+
+    try:
+        from .client import _request, get_team_id, list_team_channels
+
         team_id = get_team_id()
         if search:
-            results = _request("POST", f"teams/{team_id}/channels/search", {"term": search}) or []
+            results = _request(
+                "POST",
+                f"teams/{team_id}/channels/search",
+                {"term": search},
+            ) or []
         else:
-            results = list_team_channels(team_id, scope=scope, limit=limit)
+            results = list_team_channels(
+                team_id,
+                scope=scope,
+                limit=limit,
+            )
+
         channels = [
-            {"id": c["id"], "name": c.get("name"), "display_name": c.get("display_name"), "type": c.get("type")}
-            for c in results[:limit]
+            {
+                "id": channel["id"],
+                "name": channel.get("name"),
+                "display_name": channel.get("display_name"),
+                "type": channel.get("type"),
+            }
+            for channel in results[:limit]
+            if isinstance(channel, dict) and channel.get("id")
         ]
         return json.dumps(channels, indent=2)
     except Exception as exc:
@@ -251,22 +458,35 @@ def handle_mm_list_channels(args: Dict[str, Any], **_) -> str:
 
 def handle_mm_list_users(args: Dict[str, Any], **_) -> str:
     search = (args.get("search") or "").strip()
-    limit = max(1, min(200, int(args.get("limit") or 50)))
+
+    try:
+        limit = max(1, min(200, int(args.get("limit") or 50)))
+    except (TypeError, ValueError):
+        return json.dumps({"error": "limit must be an integer"})
+
     try:
         from .client import get_team_id, list_team_members
+
         team_id = get_team_id()
         users = list_team_members(team_id, limit=limit, search=search)
-        result = [
-            {
-                "id": u["id"],
-                "username": u.get("username"),
-                "display_name": (u.get("props") or {}).get("customStatus") or
-                                f"{u.get('first_name', '')} {u.get('last_name', '')}".strip()
-                                or u.get("username"),
-                "email": u.get("email"),
-            }
-            for u in users
-        ]
+
+        result = []
+        for user in users:
+            if not isinstance(user, dict) or not user.get("id"):
+                continue
+
+            full_name = (
+                f"{user.get('first_name', '')} {user.get('last_name', '')}"
+            ).strip()
+            result.append(
+                {
+                    "id": user["id"],
+                    "username": user.get("username"),
+                    "display_name": full_name or user.get("username"),
+                    "email": user.get("email"),
+                }
+            )
+
         return json.dumps(result, indent=2)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
@@ -275,16 +495,29 @@ def handle_mm_list_users(args: Dict[str, Any], **_) -> str:
 def handle_mm_open_dm(args: Dict[str, Any], **_) -> str:
     username = (args.get("username") or "").strip()
     message = (args.get("message") or "").strip()
+
     if not username:
         return json.dumps({"error": "username is required"})
+
     try:
-        from .client import open_direct_channel, resolve_user, _request
-        uid = resolve_user(username)
-        channel_id = open_direct_channel(uid)
-        result: Dict[str, Any] = {"ok": True, "channel_id": channel_id, "user_id": uid}
+        from .client import _request, open_direct_channel, resolve_user
+
+        user_id = resolve_user(username)
+        channel_id = open_direct_channel(user_id)
+        result: Dict[str, Any] = {
+            "ok": True,
+            "channel_id": channel_id,
+            "user_id": user_id,
+        }
+
         if message:
-            data = _request("POST", "posts", {"channel_id": channel_id, "message": message})
+            data = _request(
+                "POST",
+                "posts",
+                {"channel_id": channel_id, "message": message},
+            )
             result["post_id"] = data.get("id", "?")
+
         return json.dumps(result)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
