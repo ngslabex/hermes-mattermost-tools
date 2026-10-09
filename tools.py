@@ -23,11 +23,10 @@ from typing import Any, Dict, Iterable, List
 MM_SEND_SCHEMA: Dict[str, Any] = {
     "name": "mm_send",
     "description": (
-        "Send a message to a Mattermost channel or direct-message conversation. "
-        "Accepts a channel name (e.g. 'agents-flood', '~town-square'), a channel ID, "
-        "or a username prefixed with '@' for a DM (e.g. '@alice'). "
-        "Use this whenever you need to post proactively: notifications, status updates, "
-        "or kicking off a conversation in a specific channel."
+    "Send a message to a Mattermost channel or direct-message "
+    "conversation. Long messages are automatically split into "
+    "multiple ordered posts. Accepts a channel name, channel ID, "
+    "or a username prefixed with '@' for a DM."
     ),
     "parameters": {
         "type": "object",
@@ -351,40 +350,110 @@ def _fmt_posts(posts_data: dict, limit: int) -> str:
 
     return "\n\n".join(output) if output else "(no messages)"
 
+# ---------------------------------------------------------------------------
+# Split
+# ---------------------------------------------------------------------------
+def _split_message(
+    message: str,
+    max_length: int = 4000,
+) -> List"""Split a long Mattermost message at safe Markdown boundaries."""
 
+    message = message.strip()
+
+    if not message:
+        return []
+
+    if len(message) <= max_length:
+        return [message]
+
+    chunks: List[str] = []
+    remaining = message
+
+    while len(remaining) > max_length:
+        split_at = remaining.rfind("\n\n", 0, max_length)
+
+        if split_at < max_length // 2:
+            split_at = remaining.rfind("\n", 0, max_length)
+
+        if split_at < max_length // 2:
+            split_at = remaining.rfind(" ", 0, max_length)
+
+        if split_at <= 0:
+            split_at = max_length
+
+        chunk = remaining[:split_at].strip()
+
+        if chunk:
+            chunks.append(chunk)
+
+        remaining = remaining[split_at:].strip()
+
+    if remaining:
+        chunks.append(remaining)
+
+    return chunks
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
 
-
-def handle_mm_send(args: Dict[str, Any], **_) -> str:
+def handle_mm_send(
+    args: Dict[str, Any],
+    **_,
+) -> str:
     target = (args.get("target") or "").strip()
     message = (args.get("message") or "").strip()
 
     if not target:
-        return json.dumps({"error": "target is required"})
+        return json.dumps({
+            "error": "target is required",
+        })
+
     if not message:
-        return json.dumps({"error": "message is required"})
+        return json.dumps({
+            "error": "message is required",
+        })
 
     try:
         from .client import _request
 
         channel_id, _is_dm = _resolve_target(target)
-        data = _request(
-            "POST",
-            "posts",
-            {"channel_id": channel_id, "message": message},
-        )
-        post_id = data.get("id", "?")
+        chunks = _split_message(message, max_length=4000)
+        post_ids: List[str] = []
+
+        total = len(chunks)
+
+        for index, chunk in enumerate(chunks, start=1):
+            if total > 1:
+                chunk = (
+                    f"**Part {index}/{total}**\n\n"
+                    f"{chunk}"
+                )
+
+            data = _request(
+                "POST",
+                "posts",
+                {
+                    "channel_id": channel_id,
+                    "message": chunk,
+                },
+            )
+
+            post_ids.append(data.get("id", "?"))
+
         return json.dumps(
             {
                 "ok": True,
-                "post_id": post_id,
                 "channel_id": channel_id,
+                "post_ids": post_ids,
+                "post_count": len(post_ids),
+                "character_count": len(message),
             }
         )
+
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return json.dumps({
+            "error": str(exc),
+        })
 
 
 def handle_mm_read(args: Dict[str, Any], **_) -> str:
