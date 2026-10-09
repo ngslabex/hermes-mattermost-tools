@@ -1,4 +1,4 @@
-# hermes-mattermost-tools
+<img width="4032" height="1269" alt="image" src="https://github.com/user-attachments/assets/0bf5e5e4-920d-46eb-84cd-c53c69a4896b" /># hermes-mattermost-tools
 
 A [Hermes Agent](https://github.com/NousResearch/hermes-agent) backend plugin that gives the agent proactive, two-way access to Mattermost. The plugin can send messages to channels and direct-message conversations, read recent channel history, list channels and users, and open direct-message conversations.
 
@@ -419,7 +419,14 @@ hermes-mattermost-tools/
 ```
 
 ## Release notes
+### 0.2.1
 
+- Added automatic chunking for long `mm_send` messages.
+- Long reports are split at paragraph, line, or word boundaries.
+- Added ordered `Part N/Total` headings.
+- `mm_send` now returns all generated post IDs.
+- Prevented long SCADA summaries from exceeding Mattermost post limits.
+- 
 ### 0.2.0
 
 - Added attachment-only webhook post support to `mm_read`
